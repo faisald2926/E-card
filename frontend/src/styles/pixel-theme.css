@@ -1,0 +1,410 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+:root {
+  --bg-color: #2c1a1a;
+  --table-color: #3e2723;
+  --card-back: #d32f2f;
+  --text-main: #ffecb3;
+  --highlight: #ffca28;
+  --shadow: #190a05;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Press Start 2P', cursive;
+  background-color: var(--bg-color);
+  color: var(--text-main);
+  overflow: hidden;
+  /* Prevent scroll bars for full immersion */
+  cursor: none;
+  /* Hide default cursor if we want to render a custom one, but maybe just for game area */
+}
+
+/* Custom Cursor */
+.custom-cursor {
+  position: fixed;
+  width: 32px;
+  height: 32px;
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewport="0 0 32 32" fill="white"><path d="M0,0 L0,24 L6,18 L12,32 L16,30 L10,16 L20,16 Z" stroke="black" stroke-width="2"/></svg>');
+  background-size: contain;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.opponent-cursor {
+  position: absolute;
+  width: 32px;
+  height: 32px;
+  /* Red tinted cursor for opponent */
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewport="0 0 32 32" fill="red"><path d="M0,0 L0,24 L6,18 L12,32 L16,30 L10,16 L20,16 Z" stroke="white" stroke-width="2"/></svg>');
+  background-size: contain;
+  pointer-events: none;
+  z-index: 9998;
+  transition: top 0.05s linear, left 0.05s linear;
+  /* Smooth micro-movements */
+}
+
+/* Game Table - Centered Layout */
+.app-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  width: 100vw;
+  background-color: #1a1a1a;
+  overflow: hidden;
+}
+
+.game-table {
+  position: relative;
+  width: 1000px;
+  height: 800px;
+  background: var(--table-color);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 50px 50px;
+  box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
+  border: 10px solid #2d1b19;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 20px;
+  box-sizing: border-box;
+  cursor: none;
+}
+
+/* Battle Mat (Drop Zone) */
+.battle-mat {
+  width: 400px;
+  height: 250px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 4px solid rgba(255, 215, 0, 0.3);
+  border-radius: 10px;
+  display: flex;
+  justify-content: space-evenly;
+  align-items: center;
+  position: relative;
+}
+
+.slot {
+  width: 110px;
+  height: 150px;
+  border: 2px dashed rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  background: rgba(0, 0, 0, 0.2);
+  transition: border-color 0.2s;
+}
+
+.slot.opponent {
+  border-color: rgba(255, 100, 100, 0.5);
+}
+
+.slot.player {
+  border-color: rgba(100, 255, 100, 0.5);
+}
+
+.played-container {
+  width: 100px;
+  height: 140px;
+  position: relative;
+}
+
+/* Opponent Area - Cards face down */
+.opponent-area {
+  position: relative;
+  height: 300px;
+  width: 100%;
+  border-bottom: 2px dashed rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.opponent-area .card {
+  position: absolute;
+}
+
+/* Player Area - Free Form */
+.player-area {
+  height: 300px;
+  width: 100%;
+  position: relative;
+  /* Essential for absolute card positioning */
+  border-top: 2px dashed rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.1);
+  cursor: none;
+}
+
+.card {
+  width: 100px;
+  height: 140px;
+  background: white;
+  border: 4px solid black;
+  border-radius: 4px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+  font-size: 10px;
+  position: absolute;
+  /* Changed from relative */
+  user-select: none;
+  box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.5);
+  transition: transform 0.1s, box-shadow 0.1s;
+  /* No transition on left/top during drag for performance, handled inline */
+  cursor: grab;
+  transform-origin: center center;
+}
+
+.card:active {
+  cursor: grabbing;
+  box-shadow: 8px 8px 10px rgba(0, 0, 0, 0.5);
+  z-index: 1000 !important;
+}
+
+.card-face h3 {
+  margin: 5px 0;
+  font-size: 10px;
+}
+
+.card.dragging {
+  cursor: grabbing;
+  opacity: 0.8;
+  z-index: 100;
+}
+
+.card-face {
+  text-align: center;
+}
+
+.card-face h3 {
+  margin: 5px 0;
+  font-size: 12px;
+}
+
+.card.emperor {
+  border-color: gold;
+  background: #fffbe6;
+}
+
+.card.citizen {
+  border-color: #5d4037;
+  background: #efebe9;
+}
+
+.card.slave {
+  border-color: #b71c1c;
+  background: #ffebee;
+}
+
+.card.back {
+  background: var(--card-back);
+  border-color: #b71c1c;
+}
+
+/* Status Bar */
+.status-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  font-size: 12px;
+  z-index: 50;
+}
+
+.hearts-display {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.heart-icon {
+  color: red;
+  font-size: 16px;
+}
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 2000;
+}
+
+.modal-content {
+  background: var(--table-color);
+  padding: 30px;
+  border: 4px solid var(--highlight);
+  text-align: center;
+  max-width: 400px;
+}
+
+/* Phase 4: Dashboard & Radio */
+.pixel-box {
+  background: var(--bg-card);
+  border: 4px solid var(--border-color);
+  padding: 10px;
+  box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.5);
+  font-family: 'Press Start 2P', monospace;
+  image-rendering: pixelated;
+}
+
+.radio-container {
+  width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 10px;
+  background: #2a2a2a;
+  color: #00ff00;
+  /* Retro green */
+  pointer-events: auto;
+  /* Enable clicks */
+  cursor: none !important;
+}
+
+.radio-display {
+  background: #000;
+  padding: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 2px inset #555;
+  height: 20px;
+}
+
+.radio-controls {
+  display: flex;
+  justify-content: space-between;
+}
+
+.dashboard-container {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  background: #3e2723;
+  /* Dark Wood */
+  color: #fff;
+  min-width: 300px;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: none !important;
+}
+
+.stat-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.stat-label {
+  font-size: 8px;
+  color: #aaa;
+}
+
+.stat-value {
+  font-size: 10px;
+}
+
+.stat-value.hearts {
+  color: #ff5555;
+}
+
+.stat-value.bet {
+  color: gold;
+}
+
+.timer-display {
+  font-size: 20px;
+  background: #000;
+  color: #0f0;
+  padding: 5px 10px;
+  border: 2px inset #444;
+}
+
+.timer-display.warning {
+  color: #f00;
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Suspense & Countdown */
+.countdown-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 80px;
+  color: white;
+  text-shadow: 4px 4px 0 #000;
+  z-index: 3000;
+  animation: pulse 1s infinite;
+  pointer-events: none;
+}
+
+@keyframes pulse {
+  0% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+  }
+
+  50% {
+    transform: translate(-50%, -50%) scale(1.2);
+    opacity: 0.8;
+  }
+
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+  }
+}
+
+/* Flip Animation */
+.card-flip-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  transform-style: preserve-3d;
+  transition: transform 0.6s cubic-bezier(0.4, 0.0, 0.2, 1);
+}
+
+.card-flip-container.flipped {
+  transform: rotateY(180deg);
+}
+
+.card-face-back,
+.card-face-front {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  backface-visibility: hidden;
+  border-radius: 4px;
+  /* Match card radius if any */
+}
+
+/* Front is what we see when flipped (the content) */
+.card-face-front {
+  transform: rotateY(180deg);
+}
+
+/* Back is what we see initially (the card back design) */
+.card-face-back {
+  transform: rotateY(0deg);
+}

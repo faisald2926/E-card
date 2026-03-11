@@ -1,0 +1,16 @@
+{
+    "name": "ecard-backend",
+    "version": "1.0.0",
+    "description": "",
+    "main": "src/server.js",
+    "scripts": {
+        "start": "node src/server.js"
+    },
+    "dependencies": {
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.5",
+        "express": "^4.19.2",
+        "socket.io": "^4.7.5",
+        "uuid": "^9.0.1"
+    }
+}

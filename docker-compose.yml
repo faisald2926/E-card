@@ -1,0 +1,24 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "0.0.0.0:3000:3000"
+    environment:
+      - NODE_ENV=development
+    networks:
+      - game-net
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "0.0.0.0:5173:5173"
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - backend
+    networks:
+      - game-net
+
+networks:
+  game-net:
+    driver: bridge
