@@ -2,16 +2,18 @@ services:
   backend:
     build: ./backend
     ports:
-      - "0.0.0.0:3000:3000"
+      - "${BIND_ADDRESS:-127.0.0.1}:3000:3000"
     environment:
       - NODE_ENV=development
+      - HOST=0.0.0.0
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
     networks:
       - game-net
 
   frontend:
     build: ./frontend
     ports:
-      - "0.0.0.0:5173:5173"
+      - "${BIND_ADDRESS:-127.0.0.1}:5173:5173"
     environment:
       - CHOKIDAR_USEPOLLING=true
     depends_on:

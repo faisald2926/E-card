@@ -1,19 +1,22 @@
-const { v4: uuidv4 } = require('uuid');
+const { isGameId, gameRoom, normalizeConfig, isCardType, normalizeRadioAction } = require('./validation');
 
 class GameManager {
     constructor(io) {
         this.io = io;
-        this.games = {}; // gameId -> GameState
+        this.games = Object.create(null);
+    }
+
+    getGame(gameId) {
+        return isGameId(gameId) ? this.games[gameId] : undefined;
+    }
+
+    hasPlayer(socket, gameId) {
+        return !!this.getGame(gameId)?.players.some(p => p.id === socket.id);
     }
 
     createGame(gameId, config) {
-        // Default config
-        const defaults = {
-            initialHearts: 20,
-            maxRounds: 8,
-            swapInterval: 2 // Swap every N rounds
-        };
-        const finalConfig = { ...defaults, ...config };
+        const finalConfig = normalizeConfig(config);
+        if (!isGameId(gameId) || !finalConfig || this.getGame(gameId)) return null;
 
         this.games[gameId] = {
             id: gameId,
@@ -30,15 +33,34 @@ class GameManager {
             history: [],
             timer: 180,
             timerInterval: null,
+            pendingTimeouts: new Set(),
             radio: { trackIndex: 0, isPlaying: false, volume: 1 }
         };
         return this.games[gameId];
     }
 
     handleJoin(socket, gameId, config) {
-        let game = this.games[gameId];
+        if (!isGameId(gameId)) {
+            socket.emit('error', { message: 'Room IDs must contain 1–64 letters, numbers, underscores or hyphens.' });
+            return;
+        }
+        const joinedGame = Object.values(this.games).find(g =>
+            g.players.some(p => p.id === socket.id) || g.spectators.includes(socket.id));
+        if (joinedGame) {
+            if (joinedGame.id === gameId && this.hasPlayer(socket, gameId)) {
+                socket.emit('game_update', this.getPublicState(gameId));
+            } else {
+                socket.emit('error', { message: 'Leave your current room before joining another.' });
+            }
+            return;
+        }
+        let game = this.getGame(gameId);
         if (!game) {
             game = this.createGame(gameId, config);
+            if (!game) {
+                socket.emit('error', { message: 'Invalid game settings.' });
+                return;
+            }
         }
 
         if (game.players.length >= 2) {
@@ -57,7 +79,7 @@ class GameManager {
         };
 
         game.players.push(player);
-        socket.join(gameId);
+        socket.join(gameRoom(gameId));
 
         console.log(`Player ${socket.id} joined game ${gameId}`);
 
@@ -69,24 +91,32 @@ class GameManager {
     }
 
     handleSpectatorJoin(socket, gameId) {
-        let game = this.games[gameId];
+        const game = this.getGame(gameId);
         if (!game) {
             socket.emit('error', { message: 'Game not found. Create a game first.' });
             return;
         }
 
-        // Add to spectators list
+        const joinedGame = Object.values(this.games).find(g =>
+            g.players.some(p => p.id === socket.id) || g.spectators.includes(socket.id));
+        if (joinedGame) {
+            if (joinedGame === game && game.spectators.includes(socket.id)) {
+                socket.emit('spectator_join', this.getSpectatorState(gameId));
+            } else {
+                socket.emit('error', { message: 'Leave your current room before spectating.' });
+            }
+            return;
+        }
         game.spectators.push(socket.id);
-        socket.join(gameId);
+        socket.join(gameRoom(gameId));
 
         console.log(`Spectator ${socket.id} joined game ${gameId}`);
 
-        // Send full spectator state with all cards visible
         socket.emit('spectator_join', this.getSpectatorState(gameId));
     }
 
     getSpectatorState(gameId) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
         if (!game) return null;
 
         return {
@@ -99,8 +129,9 @@ class GameManager {
                 id: p.id,
                 hearts: p.hearts,
                 money: p.money,
-                hand: p.hand, // FULL HAND VISIBLE TO SPECTATOR
-                playedCard: p.playedCard, // Current played card
+                hand: game.config.revealSpectatorHands ? [...p.hand] : p.hand.map(() => 'back'),
+                playedCard: game.config.revealSpectatorHands || game.state === 'resolved' || game.state === 'finished'
+                    ? p.playedCard : null,
                 hasPlayed: !!p.playedCard,
                 hasBet: p.hasBet,
                 betAmount: p.hasBet ? p.betAmount : null,
@@ -113,11 +144,11 @@ class GameManager {
     }
 
     broadcastState(gameId) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
         if (!game) return;
 
         const publicState = this.getPublicState(gameId);
-        this.io.to(gameId).emit('game_update', publicState);
+        this.io.to(gameRoom(gameId)).emit('game_update', publicState);
 
         if (game.spectators && game.spectators.length > 0) {
             const specState = this.getSpectatorState(gameId);
@@ -128,14 +159,15 @@ class GameManager {
     }
 
     startGame(gameId) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
+        if (!game || game.state !== 'waiting' || game.players.length !== 2) return;
         game.roles.emperor = game.players[0].id;
         game.roles.slave = game.players[1].id;
 
         game.state = 'betting';
         this.dealCards(gameId);
 
-        this.io.to(gameId).emit('game_start', {
+        this.io.to(gameRoom(gameId)).emit('game_start', {
             message: 'Game Started',
             roles: game.roles,
             config: game.config
@@ -144,7 +176,7 @@ class GameManager {
     }
 
     dealCards(gameId) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
         game.players.forEach(p => {
             const isEmperor = p.id === game.roles.emperor;
             if (isEmperor) {
@@ -163,11 +195,12 @@ class GameManager {
     }
 
     handleBet(socket, gameId, amount) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
         if (!game || game.state !== 'betting') return;
+        if (!Number.isSafeInteger(amount) || amount < 1) return;
 
         const player = game.players.find(p => p.id === socket.id);
-        if (!player) return;
+        if (!player || player.hasBet) return;
 
         const validAmount = Math.max(1, Math.min(amount, player.hearts));
 
@@ -183,15 +216,16 @@ class GameManager {
 
             game.state = 'playing';
             this.startTimer(gameId); // Start 3 min timer
-            this.io.to(gameId).emit('phase_change', { phase: 'playing', bet: game.bet });
+            this.io.to(gameRoom(gameId)).emit('phase_change', { phase: 'playing', bet: game.bet });
         }
 
         this.broadcastState(gameId);
     }
 
     handlePlayCard(socket, gameId, cardType) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
         if (!game || game.state !== 'playing') return;
+        if (!isCardType(cardType)) return;
 
         const player = game.players.find(p => p.id === socket.id);
         if (!player || player.playedCard) return;
@@ -203,7 +237,7 @@ class GameManager {
         player.playedCard = cardType;
 
         this.io.to(socket.id).emit('hand_update', { hand: player.hand });
-        this.io.to(gameId).emit('player_action', { playerId: socket.id, action: 'played_card' });
+        this.io.to(gameRoom(gameId)).emit('player_action', { playerId: socket.id, action: 'played_card' });
 
         if (game.players.every(p => p.playedCard)) {
             this.resolveRound(gameId);
@@ -214,7 +248,7 @@ class GameManager {
     }
 
     handleRequestHand(socket, gameId) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
         if (!game) return;
         const player = game.players.find(p => p.id === socket.id);
         if (player) {
@@ -223,24 +257,23 @@ class GameManager {
     }
 
     handleHandReorder(socket, gameId, newHand) {
-        const game = this.games[gameId];
-        if (!game) return;
+        const game = this.getGame(gameId);
+        if (!game || !['betting', 'playing'].includes(game.state)) return;
         const player = game.players.find(p => p.id === socket.id);
         if (!player) return;
 
-        // Validation: Verify newHand has same contents as current hand (interaction with cheat prevention)
-        // Simple check: Sort both and compare? Or just length?
-        // For E-card, cards are small set.
-        // Let's just trust for now or do a quick length check. 
-        if (player.hand.length !== newHand.length) return;
-
-        // Update
-        player.hand = newHand;
-        // No need to broadcast, it's private.
+        if (!Array.isArray(newHand) || player.hand.length !== newHand.length || !newHand.every(isCardType)) return;
+        // Reordering preserves the complete multiset, including duplicate citizens.
+        const current = [...player.hand].sort();
+        const proposed = [...newHand].sort();
+        if (!current.every((card, index) => card === proposed[index])) return;
+        player.hand = [...newHand];
     }
 
     resolveRound(gameId) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
+        if (!game || game.state !== 'playing' || game.players.length !== 2
+            || !game.players.every(p => p.playedCard)) return;
         this.stopTimer(gameId); // Stop timer
         game.state = 'resolved';
 
@@ -294,7 +327,7 @@ class GameManager {
             });
 
             if (loser.hearts <= 0) {
-                this.io.to(gameId).emit('round_result', {
+                this.io.to(gameRoom(gameId)).emit('round_result', {
                     p1Card: p1.playedCard,
                     p2Card: p2.playedCard,
                     winner: result,
@@ -313,8 +346,8 @@ class GameManager {
                     gameOver: true
                 });
 
-                setTimeout(() => {
-                    this.io.to(gameId).emit('game_over', {
+                this.schedule(gameId, () => {
+                    this.io.to(gameRoom(gameId)).emit('game_over', {
                         winner: winner.id,
                         reason: 'bankruptcy',
                         history: game.history,
@@ -342,7 +375,7 @@ class GameManager {
             });
         }
 
-        this.io.to(gameId).emit('round_result', {
+        this.io.to(gameRoom(gameId)).emit('round_result', {
             p1Card: p1.playedCard,
             p2Card: p2.playedCard,
             winner: result,
@@ -365,21 +398,21 @@ class GameManager {
         if (result === 'tie') {
             // On tie: DON'T return cards - players continue with remaining cards
             // A round only ends when someone wins
-            setTimeout(() => {
+            this.schedule(gameId, () => {
                 game.players.forEach(p => {
                     // Don't return the card - just clear played state
                     p.playedCard = null;
                 });
                 game.state = 'playing';
                 this.startTimer(gameId);
-                this.io.to(gameId).emit('tie_replay', {
+                this.io.to(gameRoom(gameId)).emit('tie_replay', {
                     message: 'Tie! Play again with remaining cards.'
                 });
                 this.broadcastState(gameId);
             }, 9000); // 9s delay (Sync with ~8s frontend animation)
         } else {
             // On win/loss: Proceed to next round with new cards
-            setTimeout(() => {
+            this.schedule(gameId, () => {
                 this.nextRound(gameId);
             }, 9000); // 9s delay
         }
@@ -394,7 +427,8 @@ class GameManager {
     }
 
     nextRound(gameId) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
+        if (!game || game.players.length !== 2) return;
         game.round++;
 
         if (game.round > game.config.maxRounds) {
@@ -412,7 +446,7 @@ class GameManager {
                 winnerId = 'draw';
             }
 
-            this.io.to(gameId).emit('game_over', {
+            this.io.to(gameRoom(gameId)).emit('game_over', {
                 winner: winnerId,
                 reason: reason,
                 history: game.history,
@@ -433,7 +467,7 @@ class GameManager {
         game.roles.slave = p1IsEmperor ? game.players[1].id : game.players[0].id;
 
         // Emit new_round FIRST so frontend can reset card positions
-        this.io.to(gameId).emit('new_round', {
+        this.io.to(gameRoom(gameId)).emit('new_round', {
             round: game.round,
             roles: game.roles
         });
@@ -445,7 +479,7 @@ class GameManager {
     }
 
     getPublicState(gameId) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
         return {
             id: game.id,
             config: game.config,
@@ -469,7 +503,7 @@ class GameManager {
     handleDisconnect(socket) {
         // Find game player is in
         Object.keys(this.games).forEach(gameId => {
-            const game = this.games[gameId];
+            const game = this.getGame(gameId);
 
             // Check if it's a spectator
             const spectatorIndex = game.spectators.indexOf(socket.id);
@@ -483,9 +517,10 @@ class GameManager {
             const playerIndex = game.players.findIndex(p => p.id === socket.id);
             if (playerIndex !== -1) {
                 console.log(`Player ${socket.id} disconnected from ${gameId}`);
-                if (game.timerInterval) clearInterval(game.timerInterval);
+                this.clearTimers(game);
                 game.players.splice(playerIndex, 1);
-                this.io.to(gameId).emit('error', { message: 'Opponent Disconnected. Please Refresh.' });
+                this.io.to(gameRoom(gameId)).emit('error', { message: 'Opponent Disconnected. Please Refresh.' });
+                this.io.in(gameRoom(gameId)).socketsLeave(gameRoom(gameId));
                 delete this.games[gameId];
             }
         });
@@ -493,12 +528,13 @@ class GameManager {
 
     // --- Timer Logic ---
     startTimer(gameId, duration = 180) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
+        if (!game || game.state !== 'playing' || game.players.length !== 2) return;
         if (game.timerInterval) clearInterval(game.timerInterval);
 
         game.timer = duration;
         game.timerInterval = setInterval(() => {
-            if (!this.games[gameId]) { // Safety check if game deleted
+            if (this.getGame(gameId) !== game) {
                 clearInterval(game.timerInterval);
                 return;
             }
@@ -510,7 +546,7 @@ class GameManager {
             // Let's emit a sync every 10s or when important?
             // For now, let's emit 'timer_update' every second?
             // Actually, for a simple game, emitting 'timer_update' {remaining} every second is fine.
-            this.io.to(gameId).emit('timer_update', { remaining: game.timer });
+            this.io.to(gameRoom(gameId)).emit('timer_update', { remaining: game.timer });
 
             if (game.timer <= 0) {
                 clearInterval(game.timerInterval);
@@ -520,7 +556,7 @@ class GameManager {
     }
 
     handleTimeout(gameId) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
         if (!game || game.state !== 'playing') return;
 
         const p1 = game.players[0];
@@ -528,7 +564,7 @@ class GameManager {
 
         // Case 1: No cards played -> Add 1 Minute
         if (!p1.playedCard && !p2.playedCard) {
-            this.io.to(gameId).emit('message', { text: 'No plays - Time Extended +1min' });
+            this.io.to(gameRoom(gameId)).emit('message', { text: 'No plays - Time Extended +1min' });
             this.startTimer(gameId, 60);
             return;
         }
@@ -548,6 +584,8 @@ class GameManager {
             return;
         }
 
+        this.stopTimer(gameId);
+        game.state = 'resolved';
         const winner = game.players.find(p => p.id === winnerId);
         const loser = game.players.find(p => p.id !== winnerId);
 
@@ -555,7 +593,7 @@ class GameManager {
         winner.money += payout;
         loser.hearts -= game.bet;
 
-        this.io.to(gameId).emit('round_result', {
+        this.io.to(gameRoom(gameId)).emit('round_result', {
             p1Card: p1.playedCard,
             p2Card: p2.playedCard,
             winner: winCode,
@@ -573,15 +611,15 @@ class GameManager {
         });
 
         if (loser.hearts <= 0) {
-            setTimeout(() => {
-                this.io.to(gameId).emit('game_over', {
+            this.schedule(gameId, () => {
+                this.io.to(gameRoom(gameId)).emit('game_over', {
                     winner: winner.id,
                     reason: 'bankruptcy'
                 });
                 game.state = 'finished';
             }, 3000);
         } else {
-            setTimeout(() => {
+            this.schedule(gameId, () => {
                 this.nextRound(gameId);
             }, 9000);
         }
@@ -589,14 +627,33 @@ class GameManager {
 
 
     stopTimer(gameId) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
         if (game && game.timerInterval) clearInterval(game.timerInterval);
+        if (game) game.timerInterval = null;
+    }
+
+    schedule(gameId, callback, delay) {
+        const game = this.getGame(gameId);
+        if (!game) return;
+        const timer = setTimeout(() => {
+            game.pendingTimeouts.delete(timer);
+            if (this.getGame(gameId) === game) callback();
+        }, delay);
+        game.pendingTimeouts.add(timer);
+    }
+
+    clearTimers(game) {
+        if (game.timerInterval) clearInterval(game.timerInterval);
+        game.timerInterval = null;
+        for (const timer of game.pendingTimeouts) clearTimeout(timer);
+        game.pendingTimeouts.clear();
     }
 
     // --- Radio Logic ---
     handleRadioAction(socket, gameId, action) {
-        const game = this.games[gameId];
-        if (!game) return;
+        const game = this.getGame(gameId);
+        action = normalizeRadioAction(action);
+        if (!game || !this.hasPlayer(socket, gameId) || !action) return;
 
         // Update server state based on action type
         if (action.type === 'play_track') {
@@ -615,12 +672,12 @@ class GameManager {
         }
 
         // Broadcast to ALL players in game for perfect sync
-        this.io.to(gameId).emit('radio_update', action);
+        this.io.to(gameRoom(gameId)).emit('radio_update', action);
     }
 
     handleRequestPlayAgain(socket, gameId) {
-        const game = this.games[gameId];
-        if (!game) return;
+        const game = this.getGame(gameId);
+        if (!game || game.state !== 'finished' || game.players.length !== 2 || !this.hasPlayer(socket, gameId)) return;
 
         if (!game.playAgainRequests) {
             game.playAgainRequests = new Set();
@@ -629,7 +686,7 @@ class GameManager {
         game.playAgainRequests.add(socket.id);
 
         // Notify waiting status
-        this.io.to(gameId).emit('play_again_status', {
+        this.io.to(gameRoom(gameId)).emit('play_again_status', {
             requestCount: game.playAgainRequests.size,
             totalPlayers: game.players.length
         });
@@ -640,12 +697,15 @@ class GameManager {
     }
 
     resetGame(gameId) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
+        if (!game || game.players.length !== 2) return;
+        this.clearTimers(game);
 
         // Reset Game State
         game.round = 1;
         game.state = 'betting'; // Skip 'waiting', go straight to betting
         game.bet = 0;
+        game.history = [];
         game.playAgainRequests = new Set();
 
         // Reset Players
@@ -657,8 +717,7 @@ class GameManager {
             p.betAmount = 0;
         });
 
-        // Swap Roles from initial config? Or just swap current? 
-        // Let's randomize for fairness on restart
+        // Randomize the starting roles for a rematch.
         const p1IsEmperor = Math.random() > 0.5;
         game.roles.emperor = p1IsEmperor ? game.players[0].id : game.players[1].id;
         game.roles.slave = p1IsEmperor ? game.players[1].id : game.players[0].id;
@@ -671,7 +730,7 @@ class GameManager {
         this.dealCards(gameId);
 
         // Notify Reset
-        this.io.to(gameId).emit('game_reset', {
+        this.io.to(gameRoom(gameId)).emit('game_reset', {
             message: 'Game Restarted',
             roles: game.roles,
             config: game.config

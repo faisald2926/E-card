@@ -16,7 +16,8 @@ function App() {
   const [lobbyConfig, setLobbyConfig] = useState({
     initialHearts: 20,
     maxRounds: 8,
-    swapInterval: 2
+    swapInterval: 2,
+    revealSpectatorHands: false
   });
   const [showConfig, setShowConfig] = useState(false);
 
@@ -33,8 +34,7 @@ function App() {
 
     socket.on('game_update', (data) => {
       console.log('game_update received:', data);
-      if (gameState?.isSpectator) return;
-      setGameState(data);
+      setGameState(previous => previous?.isSpectator ? { ...data, isSpectator: true } : data);
     });
 
     socket.on('spectator_join', (data) => {
@@ -69,6 +69,7 @@ function App() {
     window.addEventListener('mousemove', handleMouseMove);
     return () => {
       socket.off('connected');
+      socket.off('disconnect');
       socket.off('game_update');
       socket.off('spectator_join');
       socket.off('spectator_update');
@@ -78,14 +79,14 @@ function App() {
   }, [gameState]);
 
   const joinGame = () => {
-    if (!inputGameId) return;
+    if (!inputGameId.trim()) return;
     // Pass config if creating, server handles if it's new
-    socket.emit('join_game', { gameId: inputGameId, config: lobbyConfig });
+    socket.emit('join_game', { gameId: inputGameId.trim(), config: lobbyConfig });
   };
 
   const joinSpectator = () => {
-    if (!inputGameId) return;
-    socket.emit('spectator_join', { gameId: inputGameId });
+    if (!inputGameId.trim()) return;
+    socket.emit('spectator_join', { gameId: inputGameId.trim() });
   };
 
   if (!gameState) {
@@ -103,6 +104,8 @@ function App() {
               type="text"
               className="pixel-input"
               placeholder="Enter Game ID"
+              maxLength={64}
+              aria-label="Room ID"
               value={inputGameId}
               onChange={(e) => setInputGameId(e.target.value)}
             />
@@ -139,6 +142,12 @@ function App() {
                   style={{ width: '50px' }}
                 />
               </div>
+              <label style={{ display: 'block', marginTop: '10px' }}>
+                <input type="checkbox" checked={lobbyConfig.revealSpectatorHands}
+                  onChange={e => setLobbyConfig({ ...lobbyConfig, revealSpectatorHands: e.target.checked })}
+                />
+                {' '}Reveal both hands to spectators
+              </label>
             </div>
           )}
 
